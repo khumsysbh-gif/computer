@@ -1,159 +1,171 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ໂປຣແກຣມບັນທຶກຖານຂໍ້ມູນບຸກຄະລາກອນ (ເພີ່ມ / ແກ້ໄຂ / ລຶບ / ຄົ້ນຫາ / ສົ່ງອອກ Excel)
-ຮອງຮັບ 3 ພາສາ: ລາວ, English, ไทย
+ໂປຣແກຣມບັນທຶກຖານຂໍ້ມູນບຸກຄະລາກອນ (Streamlit)
+ເພີ່ມ / ແກ້ໄຂ / ລຶບ / ຄົ້ນຫາ / ສົ່ງອອກ Excel  |  3 ພາສາ: ລາວ, English, ไทย
+
+ຕິດຕັ້ງ:  pip install streamlit pillow openpyxl pandas
+ແລ່ນ:     python -m streamlit run database_app.py
 """
-#python -m streamlit run database_app.py
 import hashlib
 import hmac
 import os
+import re
 import sqlite3
-import tkinter as tk
 from datetime import datetime
 from io import BytesIO
-from tkinter import filedialog, messagebox, simpledialog, ttk
 
-try:
-    from PIL import Image, ImageOps, ImageTk
-    from openpyxl import Workbook
-    from openpyxl.drawing.image import Image as XLImage
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-    from openpyxl.utils import get_column_letter
-    MISSING_LIB = None
-except ImportError as _e:
-    MISSING_LIB = str(_e)
+import pandas as pd
+import streamlit as st
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from PIL import Image, ImageOps
 
 DB_FILE = "data.db"
 PBKDF2_ROUNDS = 200_000
 MAX_LOGIN_ATTEMPTS = 3
 MIN_PASSWORD_LEN = 6
-
-DATE_FORMAT = "%d/%m/%Y"
-DATE_HINT = "ວວ/ດດ/ປປປປ"
-
 PHOTO_SIZE = (300, 400)
-PREVIEW_SIZE = (150, 200)
 
-# ລະບົບຄຳສັບ 3 ພາສາ (Localization Dictionary)
+# ---------------------------------------------------------------- ຄຳສັບ 3 ພາສາ
 LANG = {
     "lo": {
         "title": "ໂປຣແກຣມບັນທຶກຖານຂໍ້ມູນບຸກຄະລາກອນ",
-        "form": "ຂໍ້ມູນ",
-        "photo": "ຮູບ 3×4",
-        "pick_photo": "📷 ເລືອກຮູບ",
-        "remove_photo": "ລຶບຮູບ",
-        "add": "➕ ເພີ່ມ",
-        "update": "✏️ ບັນທຶກການແກ້ໄຂ",
-        "delete": "🗑 ລຶບ",
-        "clear": "ລ້າງຟອມ",
-        "export": "📥 ດາວໂຫຼດ Excel",
-        "change_pw": "🔑 ປ່ຽນລະຫັດຜ່ານ",
-        "logout": "🚪 ອອກຈາກລະບົບ",
-        "search": "ຄົ້ນຫາ",
-        "show_all": "ສະແດງທັງໝົດ",
-        "no_photo": "ຮູບ 3×4\n(ຍັງບໍ່ມີຮູບ)",
+        "form": "ຂໍ້ມູນ", "photo": "ຮູບ 3×4",
+        "pick_photo": "ເລືອກຮູບ", "remove_photo": "ລຶບຮູບ",
+        "add": "➕ ເພີ່ມ", "update": "✏️ ບັນທຶກການແກ້ໄຂ", "delete": "🗑 ລຶບ",
+        "clear": "ລ້າງຟອມ", "export": "📥 ສ້າງໄຟລ໌ Excel", "download": "⬇️ ດາວໂຫຼດ Excel",
+        "change_pw": "🔑 ປ່ຽນລະຫັດຜ່ານ", "logout": "🚪 ອອກຈາກລະບົບ",
+        "search": "ຄົ້ນຫາ", "search_ph": "ພິມຄຳຄົ້ນຫາ...", "show_all": "ສະແດງທັງໝົດ",
+        "no_photo": "ຍັງບໍ່ມີຮູບ",
         "required_hint": "* ຈຳເປັນຕ້ອງໃສ່     ຮູບແບບວັນທີ: ວວ/ດດ/ປປປປ  (ເຊັ່ນ 25/10/2026)",
-        "select_row_err": "ກະລຸນາເລືອກແຖວທີ່ຕ້ອງການກ່ອນ",
-        "success": "ສຳເລັດ",
-        "error": "ຜິດພາດ",
+        "select_row_err": "ກະລຸນາເລືອກແຖວຈາກຕາຕະລາງກ່ອນ",
+        "success": "ສຳເລັດ", "error": "ຜິດພາດ",
+        "setup_title": "ຕັ້ງລະຫັດຜ່ານຄັ້ງທຳອິດ",
+        "new_pw": f"ລະຫັດຜ່ານໃໝ່ (ຢ່າງໜ້ອຍ {MIN_PASSWORD_LEN} ຕົວ)",
+        "confirm_pw": "ຢືນຢັນລະຫັດຜ່ານ", "save": "ບັນທຶກ",
+        "login_title": "ເຂົ້າສູ່ລະບົບ", "password": "ລະຫັດຜ່ານ", "login": "ເຂົ້າສູ່ລະບົບ",
+        "wrong_pw": "ລະຫັດຜ່ານບໍ່ຖືກ", "attempts": "ເຫຼືອໂອກາດ",
+        "locked": "ໃສ່ລະຫັດຜິດເກີນກຳນົດ. ກະລຸນາໂຫຼດໜ້າໃໝ່ເພື່ອລອງອີກ.",
+        "pw_short": "ລະຫັດຜ່ານສັ້ນເກີນໄປ", "pw_mismatch": "ລະຫັດຜ່ານບໍ່ກົງກັນ",
+        "pw_updated": "ປ່ຽນລະຫັດຜ່ານແລ້ວ", "old_pw": "ລະຫັດຜ່ານປັດຈຸບັນ",
+        "name_required": "ກະລຸນາໃສ່ຊື່", "bad_date": "ຮູບແບບວັນທີບໍ່ຖືກ (ວວ/ດດ/ປປປປ):",
+        "added": "ເພີ່ມຂໍ້ມູນສຳເລັດ", "updated": "ແກ້ໄຂຂໍ້ມູນສຳເລັດ", "deleted": "ລຶບຂໍ້ມູນສຳເລັດ",
+        "confirm_delete": "ຢືນຢັນການລຶບຂໍ້ມູນນີ້?", "yes": "ຢືນຢັນ", "cancel": "ຍົກເລີກ",
+        "total": "ທັງໝົດ", "no_data": "ບໍ່ມີຂໍ້ມູນ", "editing": "ກຳລັງແກ້ໄຂ ID",
+        "language": "ພາສາ", "upload_hint": "ອັບໂຫຼດຮູບ (jpg, png, bmp)",
     },
     "en": {
         "title": "Personnel Database Management System",
-        "form": "Information",
-        "photo": "Photo 3×4",
-        "pick_photo": "📷 Select Photo",
-        "remove_photo": "Remove Photo",
-        "add": "➕ Add",
-        "update": "✏️ Save Update",
-        "delete": "🗑 Delete",
-        "clear": "Clear Form",
-        "export": "📥 Export Excel",
-        "change_pw": "🔑 Change Password",
-        "logout": "🚪 Logout",
-        "search": "Search",
-        "show_all": "Show All",
-        "no_photo": "Photo 3×4\n(No Photo)",
+        "form": "Information", "photo": "Photo 3×4",
+        "pick_photo": "Select Photo", "remove_photo": "Remove Photo",
+        "add": "➕ Add", "update": "✏️ Save Update", "delete": "🗑 Delete",
+        "clear": "Clear Form", "export": "📥 Build Excel", "download": "⬇️ Download Excel",
+        "change_pw": "🔑 Change Password", "logout": "🚪 Logout",
+        "search": "Search", "search_ph": "Type to search...", "show_all": "Show All",
+        "no_photo": "No photo",
         "required_hint": "* Required     Date format: DD/MM/YYYY  (e.g., 25/10/2026)",
-        "select_row_err": "Please select a row first",
-        "success": "Success",
-        "error": "Error",
+        "select_row_err": "Please select a row from the table first",
+        "success": "Success", "error": "Error",
+        "setup_title": "First-time password setup",
+        "new_pw": f"New password (min {MIN_PASSWORD_LEN} chars)",
+        "confirm_pw": "Confirm password", "save": "Save",
+        "login_title": "Login", "password": "Password", "login": "Login",
+        "wrong_pw": "Incorrect password", "attempts": "Attempts left",
+        "locked": "Too many failed attempts. Reload the page to try again.",
+        "pw_short": "Password too short", "pw_mismatch": "Passwords do not match",
+        "pw_updated": "Password updated", "old_pw": "Current password",
+        "name_required": "Please input Name", "bad_date": "Invalid date format (DD/MM/YYYY):",
+        "added": "Added successfully", "updated": "Updated successfully", "deleted": "Deleted successfully",
+        "confirm_delete": "Delete this record?", "yes": "Confirm", "cancel": "Cancel",
+        "total": "Total", "no_data": "No data", "editing": "Editing ID",
+        "language": "Language", "upload_hint": "Upload photo (jpg, png, bmp)",
     },
     "th": {
         "title": "โปรแกรมบันทึกฐานข้อมูลบุคลากร",
-        "form": "ข้อมูล",
-        "photo": "รูป 3×4",
-        "pick_photo": "📷 เลือกรูป",
-        "remove_photo": "ลบรูป",
-        "add": "➕ เพิ่ม",
-        "update": "✏️ บันทึกการแก้ไข",
-        "delete": "🗑 ลบ",
-        "clear": "ล้างฟอร์ม",
-        "export": "📥 ดาวน์โหลด Excel",
-        "change_pw": "🔑 เปลี่ยนรหัสผ่าน",
-        "logout": "🚪 ออกจากระบบ",
-        "search": "ค้นหา",
-        "show_all": "แสดงทั้งหมด",
-        "no_photo": "รูป 3×4\n(ยังไม่มีรูป)",
+        "form": "ข้อมูล", "photo": "รูป 3×4",
+        "pick_photo": "เลือกรูป", "remove_photo": "ลบรูป",
+        "add": "➕ เพิ่ม", "update": "✏️ บันทึกการแก้ไข", "delete": "🗑 ลบ",
+        "clear": "ล้างฟอร์ม", "export": "📥 สร้างไฟล์ Excel", "download": "⬇️ ดาวน์โหลด Excel",
+        "change_pw": "🔑 เปลี่ยนรหัสผ่าน", "logout": "🚪 ออกจากระบบ",
+        "search": "ค้นหา", "search_ph": "พิมพ์คำค้นหา...", "show_all": "แสดงทั้งหมด",
+        "no_photo": "ยังไม่มีรูป",
         "required_hint": "* จำเป็นต้องใส่     รูปแบบวันที่: วว/ดด/ปปปป  (เช่น 25/10/2026)",
-        "select_row_err": "กรุณาเลือกแถวที่ต้องการก่อน",
-        "success": "สำเร็จ",
-        "error": "ผิดพลาด",
-    }
+        "select_row_err": "กรุณาเลือกแถวจากตารางก่อน",
+        "success": "สำเร็จ", "error": "ผิดพลาด",
+        "setup_title": "ตั้งรหัสผ่านครั้งแรก",
+        "new_pw": f"รหัสผ่านใหม่ (อย่างน้อย {MIN_PASSWORD_LEN} ตัว)",
+        "confirm_pw": "ยืนยันรหัสผ่าน", "save": "บันทึก",
+        "login_title": "เข้าสู่ระบบ", "password": "รหัสผ่าน", "login": "เข้าสู่ระบบ",
+        "wrong_pw": "รหัสผ่านไม่ถูกต้อง", "attempts": "โอกาสที่เหลือ",
+        "locked": "ใส่รหัสผิดเกินกำหนด กรุณารีโหลดหน้าเพื่อลองใหม่",
+        "pw_short": "รหัสผ่านสั้นเกินไป", "pw_mismatch": "รหัสผ่านไม่ตรงกัน",
+        "pw_updated": "เปลี่ยนรหัสผ่านแล้ว", "old_pw": "รหัสผ่านปัจจุบัน",
+        "name_required": "กรุณาใส่ชื่อ", "bad_date": "รูปแบบวันที่ไม่ถูกต้อง (วว/ดด/ปปปป):",
+        "added": "เพิ่มข้อมูลสำเร็จ", "updated": "แก้ไขข้อมูลสำเร็จ", "deleted": "ลบข้อมูลสำเร็จ",
+        "confirm_delete": "ยืนยันการลบข้อมูลนี้?", "yes": "ยืนยัน", "cancel": "ยกเลิก",
+        "total": "ทั้งหมด", "no_data": "ไม่มีข้อมูล", "editing": "กำลังแก้ไข ID",
+        "language": "ภาษา", "upload_hint": "อัปโหลดรูป (jpg, png, bmp)",
+    },
 }
+LANG_NAMES = {"lo": "ລາວ", "en": "English", "th": "ไทย"}
 
-# ຊື່ຟີલ્ડ ແລະ ການແປພາສາໃນຟອມ
 FIELDS = [
-    ("military_id",     {"lo": "ເລກນາຍທະຫານ", "en": "Military ID", "th": "เลข 3 นายทหาร"}, "text"),
-    ("id_card",         {"lo": "ເລກບັດປະຈຳຕົວ", "en": "ID Card", "th": "เลขบัตรประจำตัว"}, "text"),
-    ("name",            {"lo": "ຊື່", "en": "Name", "th": "ชื่อ"}, "text"),
-    ("surname",         {"lo": "ນາມສະກຸນ", "en": "Surname", "th": "นามสกุล"}, "text"),
-    ("gender",          {"lo": "ເພດ", "en": "Gender", "th": "เพศ"}, "combo"),
-    ("rank",            {"lo": "ຊັ້ນ", "en": "Rank", "th": "ชั้นยศ"}, "text"),
-    ("birth_date",      {"lo": "ວັນເດືອນປີເກີດ", "en": "Birth Date", "th": "วันเดือนปีเกิด"}, "date"),
+    ("military_id", {"lo": "ເລກນາຍທະຫານ", "en": "Military ID", "th": "เลขนายทหาร"}, "text"),
+    ("id_card", {"lo": "ເລກບັດປະຈຳຕົວ", "en": "ID Card", "th": "เลขบัตรประจำตัว"}, "text"),
+    ("name", {"lo": "ຊື່", "en": "Name", "th": "ชื่อ"}, "text"),
+    ("surname", {"lo": "ນາມສະກຸນ", "en": "Surname", "th": "นามสกุล"}, "text"),
+    ("gender", {"lo": "ເພດ", "en": "Gender", "th": "เพศ"}, "combo"),
+    ("rank", {"lo": "ຊັ້ນ", "en": "Rank", "th": "ชั้นยศ"}, "text"),
+    ("birth_date", {"lo": "ວັນເດືອນປີເກີດ", "en": "Birth Date", "th": "วันเดือนปีเกิด"}, "date"),
     ("revolution_date", {"lo": "ວັນເດືອນປີເຂົ້າການປະຕິວັດ", "en": "Revolution Date", "th": "วันเดือนปีเข้าปฏิวัติ"}, "date"),
-    ("promotion_date",  {"lo": "ວັນເດືອນປີເລື່ອນຊັ້ນ", "en": "Promotion Date", "th": "วันเดือนปีเลื่อนชั้น"}, "date"),
-    ("duty",            {"lo": "ໜ້າທີ່ຮັບຜິດຊອບ", "en": "Duty", "th": "หน้าที่รับผิดชอบ"}, "text"),
-    ("party_position",  {"lo": "ຕຳແໜ່ງພັກ", "en": "Party Position", "th": "ตำแหน่งพรรค"}, "text"),
-    ("state_position",  {"lo": "ຕຳແໜ່ງລັດ", "en": "State Position", "th": "ตำแหน่งรัฐ"}, "text"),
-    ("unit",            {"lo": "ກົມກອງສັງກັດ", "en": "Unit", "th": "สังกัด/กรมกอง"}, "text"),
+    ("promotion_date", {"lo": "ວັນເດືອນປີເລື່ອນຊັ້ນ", "en": "Promotion Date", "th": "วันเดือนปีเลื่อนชั้น"}, "date"),
+    ("duty", {"lo": "ໜ້າທີ່ຮັບຜິດຊອບ", "en": "Duty", "th": "หน้าที่รับผิดชอบ"}, "text"),
+    ("party_position", {"lo": "ຕຳແໜ່ງພັກ", "en": "Party Position", "th": "ตำแหน่งพรรค"}, "text"),
+    ("state_position", {"lo": "ຕຳແໜ່ງລັດ", "en": "State Position", "th": "ตำแหน่งรัฐ"}, "text"),
+    ("unit", {"lo": "ກົມກອງສັງກັດ", "en": "Unit", "th": "สังกัด/กรมกอง"}, "text"),
     ("reserve_party_date", {"lo": "ວັນເດືອນປີເຂົ້າພັກສຳຮອງ", "en": "Reserve Party Date", "th": "วันเข้าพรรคสำรอง"}, "date"),
-    ("full_party_date",    {"lo": "ວັນເດືອນປີເຂົ້າພັກສົມບູນ", "en": "Full Party Date", "th": "วันเข้าพรรคสมบูรณ์"}, "date"),
-    ("education",       {"lo": "ລະດັບການສຶກສາ", "en": "Education", "th": "ระดับการศึกษา"}, "combo"),
-    ("phone",           {"lo": "ເບີໂທ", "en": "Phone", "th": "เบอร์โทร"}, "text"),
-    ("address",         {"lo": "ທີ່ຢູ່", "en": "Address", "th": "ที่อยู่"}, "text"),
-    ("note",            {"lo": "ໝາຍເຫດ", "en": "Note", "th": "หมายเหตุ"}, "text"),
+    ("full_party_date", {"lo": "ວັນເດືອນປີເຂົ້າພັກສົມບູນ", "en": "Full Party Date", "th": "วันเข้าพรรคสมบูรณ์"}, "date"),
+    ("education", {"lo": "ລະດັບການສຶກສາ", "en": "Education", "th": "ระดับการศึกษา"}, "combo"),
+    ("phone", {"lo": "ເບີໂທ", "en": "Phone", "th": "เบอร์โทร"}, "text"),
+    ("address", {"lo": "ທີ່ຢູ່", "en": "Address", "th": "ที่อยู่"}, "text"),
+    ("note", {"lo": "ໝາຍເຫດ", "en": "Note", "th": "หมายเหตุ"}, "text"),
 ]
 FIELD_KEYS = [f[0] for f in FIELDS]
+DATE_KEYS = [f[0] for f in FIELDS if f[2] == "date"]
 
 COMBO_OPTIONS = {
     "gender": {
-        "lo": ["ຊາຍ", "ຍິງ"], 
-        "en": ["Male", "Female"], 
-        "th": ["ชาย", "หญิง"]
+        "lo": ["ຊາຍ", "ຍິງ"],
+        "en": ["Male", "Female"],
+        "th": ["ชาย", "หญิง"],
     },
     "education": {
         "lo": ["ປະຖົມ", "ມັດທະຍົມຕອນຕົ້ນ", "ມັດທະຍົມຕອນປາຍ", "ຊັ້ນກາງ / ວິຊາຊີບ", "ຊັ້ນສູງ", "ປະລິນຍາຕີ", "ປະລິນຍາໂທ", "ປະລິນຍາເອກ"],
         "en": ["Primary", "Lower Secondary", "Upper Secondary", "Vocational/Diploma", "Higher Diploma", "Bachelor's", "Master's", "Doctorate"],
-        "th": ["ประถม", "มัธยมศึกษาตอนต้น", "มัธยมศึกษาตอนปลาย", "ปวส./อนุปริญญา", "ปริญญาตรี", "ปริญญาโท", "ปริญญาเอก"]
+        "th": ["ประถม", "มัธยมศึกษาตอนต้น", "มัธยมศึกษาตอนปลาย", "ปวส./อนุปริญญา", "ปริญญาตรี", "ปริญญาโท", "ปริญญาเอก"],
     },
 }
 
 TABLE_COLS = ["military_id", "name", "surname", "gender", "rank", "unit", "party_position", "phone"]
-TABLE_WIDTHS = {"military_id": 120, "name": 130, "surname": 130, "gender": 60, "rank": 100, "unit": 180, "party_position": 140, "phone": 110}
 
 
+# ---------------------------------------------------------------- Database
 class Database:
     def __init__(self, path=DB_FILE):
-        self.conn = sqlite3.connect(path)
+        # check_same_thread=False ເພາະ Streamlit ໃຊ້ຫຼາຍ thread
+        self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
         self._migrate()
 
     def _create_tables(self):
         with self.conn:
-            self.conn.execute("""CREATE TABLE IF NOT EXISTS auth (id INTEGER PRIMARY KEY CHECK (id = 1), salt BLOB NOT NULL, pw_hash BLOB NOT NULL)""")
-            self.conn.execute("""CREATE TABLE IF NOT EXISTS records (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS auth (
+                id INTEGER PRIMARY KEY CHECK (id = 1), salt BLOB NOT NULL, pw_hash BLOB NOT NULL)""")
+            self.conn.execute("""CREATE TABLE IF NOT EXISTS records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)""")
 
     def _migrate(self):
         existing = {r["name"] for r in self.conn.execute("PRAGMA table_info(records)")}
@@ -173,9 +185,9 @@ class Database:
 
     def set_password(self, password: str):
         salt = os.urandom(16)
-        pw_hash = self._hash(password, salt)
         with self.conn:
-            self.conn.execute("INSERT OR REPLACE INTO auth (id, salt, pw_hash) VALUES (1, ?, ?)", (salt, pw_hash))
+            self.conn.execute("INSERT OR REPLACE INTO auth (id, salt, pw_hash) VALUES (1, ?, ?)",
+                              (salt, self._hash(password, salt)))
 
     def verify_password(self, password: str) -> bool:
         row = self.conn.execute("SELECT salt, pw_hash FROM auth WHERE id = 1").fetchone()
@@ -203,7 +215,8 @@ class Database:
         return self.conn.execute("SELECT * FROM records WHERE id=?", (rec_id,)).fetchone()
 
     def all(self):
-        return self.conn.execute("SELECT id, " + ", ".join(TABLE_COLS) + " FROM records ORDER BY id DESC").fetchall()
+        return self.conn.execute(
+            "SELECT id, " + ", ".join(TABLE_COLS) + " FROM records ORDER BY id DESC").fetchall()
 
     def all_full(self):
         return self.conn.execute("SELECT * FROM records ORDER BY id ASC").fetchall()
@@ -211,11 +224,19 @@ class Database:
     def search(self, keyword):
         like = f"%{keyword}%"
         where = " OR ".join(f"{k} LIKE ?" for k in FIELD_KEYS)
-        return self.conn.execute(f"SELECT id, " + ", ".join(TABLE_COLS) + f" FROM records WHERE {where} ORDER BY id DESC", [like] * len(FIELD_KEYS)).fetchall()
+        return self.conn.execute(
+            "SELECT id, " + ", ".join(TABLE_COLS) + f" FROM records WHERE {where} ORDER BY id DESC",
+            [like] * len(FIELD_KEYS)).fetchall()
 
 
-def process_photo(path: str) -> bytes:
-    img = Image.open(path)
+@st.cache_resource
+def get_db() -> Database:
+    return Database()
+
+
+# ---------------------------------------------------------------- Helpers
+def process_photo(file_like) -> bytes:
+    img = Image.open(file_like)
     img = ImageOps.exif_transpose(img).convert("RGB")
     w, h = img.size
     target = PHOTO_SIZE[0] / PHOTO_SIZE[1]
@@ -233,7 +254,7 @@ def process_photo(path: str) -> bytes:
     return buf.getvalue()
 
 
-def export_to_excel(rows, path: str, lang_code: str):
+def export_to_excel(rows, lang_code: str) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "Personnel Data"
@@ -273,298 +294,352 @@ def export_to_excel(rows, path: str, lang_code: str):
 
     ws.column_dimensions["A"].width = 8
     ws.column_dimensions["B"].width = 14
-    wb.save(path)
+    for c in range(3, len(headers) + 1):
+        ws.column_dimensions[get_col(c)].width = 22
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
-def authenticate(db: Database) -> bool:
-    root = tk.Tk()
-    root.withdraw()
-    try:
-        if not db.has_password():
-            messagebox.showinfo("Setup", "First time setup. Please set your password.")
-            while True:
-                pw1 = simpledialog.askstring("Setup", f"New Password (min {MIN_PASSWORD_LEN} chars):", show="*")
-                if not pw1: return False
-                if len(pw1) < MIN_PASSWORD_LEN: continue
-                pw2 = simpledialog.askstring("Confirm", "Re-enter password:", show="*")
-                if pw1 == pw2:
-                    db.set_password(pw1)
-                    return True
-        for attempt in range(1, MAX_LOGIN_ATTEMPTS + 1):
-            pw = simpledialog.askstring("Login", f"Password (Attempt {attempt}/{MAX_LOGIN_ATTEMPTS}):", show="*")
-            if not pw: return False
-            if db.verify_password(pw): return True
+def get_col(idx: int) -> str:
+    from openpyxl.utils import get_column_letter
+    return get_column_letter(idx)
+
+
+def valid_date(text: str) -> bool:
+    if not text:
+        return True
+    if not re.fullmatch(r"\d{1,2}/\d{1,2}/\d{4}", text):
         return False
-    finally:
-        root.destroy()
+    try:
+        datetime.strptime(text, "%d/%m/%Y")
+        return True
+    except ValueError:
+        return False
 
 
-class App(tk.Tk):
-    def __init__(self, db: Database):
-        super().__init__()
-        self.db = db
-        self.current_lang = "lo"  # ພາສາເລີ່ມຕົ້ນ (ລາວ)
-        self.selected_id = None
-        self.photo_bytes = None
-        self._photo_tk = None
-        self.is_logged_out = False
+def t(key: str) -> str:
+    return LANG[st.session_state.lang].get(key, key)
 
-        self.geometry("1320x800")
-        self.minsize(1100, 680)
-        self.option_add("*Font", "Phetsarath 11")
 
-        self.vars = {k: tk.StringVar() for k in FIELD_KEYS}
-        
-        self.ui_elements = {}
-        self._build_ui()
-        self.refresh()
+# ---------------------------------------------------------------- State
+def init_state():
+    defaults = {
+        "lang": "lo",
+        "authenticated": False,
+        "failed_attempts": 0,
+        "selected_id": None,
+        "photo_bytes": None,
+        "uploader_n": 0,
+        "table_n": 0,
+        "pending_load": None,      # dict ທີ່ຈະໂຫຼດເຂົ້າຟອມໃນຮອບຕໍ່ໄປ
+        "confirm_delete": False,
+        "flash": None,             # (type, message)
+        "excel_bytes": None,
+        "search_kw": "",
+    }
+    for k, v in defaults.items():
+        st.session_state.setdefault(k, v)
+    for k in FIELD_KEYS:
+        st.session_state.setdefault(f"f_{k}", "")
 
-    def _t(self, key):
-        return LANG[self.current_lang].get(key, key)
 
-    def _build_ui(self):
-        # ລຶບ Widget ເກົ່າຖ້າມີການຣີເຟຣຊພາສາ
-        for widget in self.winfo_children():
-            widget.destroy()
+def apply_pending_load():
+    """ຕ້ອງເອີ້ນກ່ອນສ້າງ widget ເພື່ອໃຫ້ປ່ຽນຄ່າໃນຟອມໄດ້"""
+    data = st.session_state.pending_load
+    if data is None:
+        return
+    for k in FIELD_KEYS:
+        st.session_state[f"f_{k}"] = data.get(k, "") or ""
+    st.session_state.pending_load = None
 
-        self.title(self._t("title"))
 
-        # Toolbar & Language Switcher
-        bar = ttk.Frame(self)
-        bar.pack(fill="x", padx=10, pady=5)
+def queue_clear():
+    st.session_state.selected_id = None
+    st.session_state.photo_bytes = None
+    st.session_state.pending_load = {k: "" for k in FIELD_KEYS}
+    st.session_state.uploader_n += 1
+    st.session_state.table_n += 1
+    st.session_state.confirm_delete = False
 
-        self.btn_add = ttk.Button(bar, text=self._t("add"), command=self.on_add)
-        self.btn_add.pack(side="left", padx=3)
-        self.btn_update = ttk.Button(bar, text=self._t("update"), command=self.on_update)
-        self.btn_update.pack(side="left", padx=3)
-        self.btn_delete = ttk.Button(bar, text=self._t("delete"), command=self.on_delete)
-        self.btn_delete.pack(side="left", padx=3)
-        self.btn_clear = ttk.Button(bar, text=self._t("clear"), command=self.clear_form)
-        self.btn_clear.pack(side="left", padx=3)
-        self.btn_export = ttk.Button(bar, text=self._t("export"), command=self.on_export)
-        self.btn_export.pack(side="left", padx=(15, 3))
-        self.btn_changepw = ttk.Button(bar, text=self._t("change_pw"), command=self.on_change_password)
-        self.btn_changepw.pack(side="left", padx=3)
-        self.btn_logout = ttk.Button(bar, text=self._t("logout"), command=self.on_logout)
-        self.btn_logout.pack(side="left", padx=(15, 3))
 
-        # 🌐 Combobox ເລືອກພາສາ
-        self.lang_cb = ttk.Combobox(bar, values=["ລາວ", "English", "ไทย"], width=10, state="readonly")
-        lang_map = {"lo": "ລາວ", "en": "English", "th": "ไทย"}
-        self.lang_cb.set(lang_map[self.current_lang])
-        self.lang_cb.pack(side="left", padx=15)
-        self.lang_cb.bind("<<ComboboxSelected>>", self.change_language)
+def flash(kind: str, msg: str):
+    st.session_state.flash = (kind, msg)
 
-        # Search Bar
-        ttk.Button(bar, text=self._t("search"), command=self.on_search).pack(side="right", padx=3)
-        self.var_search = tk.StringVar()
-        entry = ttk.Entry(bar, textvariable=self.var_search, width=20)
-        entry.pack(side="right", padx=3)
-        entry.bind("<Return>", lambda e: self.on_search())
-        ttk.Button(bar, text=self._t("show_all"), command=self.refresh).pack(side="right", padx=3)
 
-        # Form Section
-        top = ttk.Frame(self)
-        top.pack(fill="x", padx=10, pady=(5, 5))
-
-        self.frm_label = ttk.LabelFrame(top, text=self._t("form"))
-        self.frm_label.pack(side="left", fill="both", expand=True)
-
-        per_row = 3
-        for i, (key, labels, kind) in enumerate(FIELDS):
-            r, c = divmod(i, per_row)
-            txt = labels[self.current_lang] + (" *" if key == "name" else "")
-            ttk.Label(self.frm_label, text=txt).grid(row=r, column=c * 2, padx=(8, 4), pady=5, sticky="e")
-            
-            if kind == "combo":
-                opts = COMBO_OPTIONS[key][self.current_lang]
-                w = ttk.Combobox(self.frm_label, textvariable=self.vars[key], values=opts, width=21, state="readonly")
-            else:
-                w = ttk.Entry(self.frm_label, textvariable=self.vars[key], width=24)
-            w.grid(row=r, column=c * 2 + 1, padx=(0, 10), pady=5, sticky="w")
-
-        last_row = (len(FIELDS) - 1) // per_row + 1
-        ttk.Label(self.frm_label, text=self._t("required_hint"), foreground="#666666").grid(
-            row=last_row, column=0, columnspan=per_row * 2, padx=8, pady=(2, 6), sticky="w"
+# ---------------------------------------------------------------- Auth screens
+def auth_screen(db: Database):
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        st.title(t("title"))
+        st.selectbox(
+            "🌐 " + t("language"), list(LANG_NAMES), index=list(LANG_NAMES).index(st.session_state.lang),
+            format_func=LANG_NAMES.get, key="lang_auth",
+            on_change=lambda: st.session_state.update(lang=st.session_state.lang_auth),
         )
 
-        # Photo Frame
-        self.pf_label = ttk.LabelFrame(top, text=self._t("photo"))
-        self.pf_label.pack(side="left", padx=(10, 0), fill="y")
-        self.canvas = tk.Canvas(self.pf_label, width=PREVIEW_SIZE[0], height=PREVIEW_SIZE[1], bg="white", highlightthickness=1, highlightbackground="#888888")
-        self.canvas.pack(padx=10, pady=(10, 6))
-        
-        btns = ttk.Frame(self.pf_label)
-        btns.pack(pady=(0, 8))
-        self.btn_pick = ttk.Button(btns, text=self._t("pick_photo"), command=self.on_pick_photo)
-        self.btn_pick.pack(side="left", padx=3)
-        self.btn_rem = ttk.Button(btns, text=self._t("remove_photo"), command=self.on_remove_photo)
-        self.btn_rem.pack(side="left", padx=3)
-
-        self._show_photo()
-
-        # Table Section
-        table_frame = ttk.Frame(self)
-        table_frame.pack(fill="both", expand=True, padx=10, pady=(5, 10))
-
-        cols = ["id"] + TABLE_COLS
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
-        self.tree.heading("id", text="ID")
-        self.tree.column("id", width=50, anchor="center")
-        for col_name in TABLE_COLS:
-            # ຊອກຫາປ້າຍຊື່ຕາມພາສາປັດຈຸບັນ
-            label_text = next(f[1][self.current_lang] for f in FIELDS if f[0] == col_name)
-            self.tree.heading(col_name, text=label_text)
-            self.tree.column(col_name, width=TABLE_WIDTHS[col_name], anchor="w")
-
-        sb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
-
-        self.status = tk.StringVar()
-        ttk.Label(self, textvariable=self.status, anchor="w").pack(fill="x", padx=10, pady=(0, 6))
-
-    def change_language(self, _event=None):
-        val = self.lang_cb.get()
-        if val == "ລາວ": self.current_lang = "lo"
-        elif val == "English": self.current_lang = "en"
-        elif val == "ไทย": self.current_lang = "th"
-        self._build_ui()
-        self.fill_table(self.db.all())
-
-    def _show_photo(self):
-        self.canvas.delete("all")
-        if self.photo_bytes:
-            img = Image.open(BytesIO(self.photo_bytes)).resize(PREVIEW_SIZE, Image.LANCZOS)
-            self._photo_tk = ImageTk.PhotoImage(img)
-            self.canvas.create_image(0, 0, anchor="nw", image=self._photo_tk)
-        else:
-            self._photo_tk = None
-            self.canvas.create_text(PREVIEW_SIZE[0] // 2, PREVIEW_SIZE[1] // 2, text=self._t("no_photo"), fill="#999999", justify="center")
-
-    def on_pick_photo(self):
-        path = filedialog.askopenfilename(title="Select Photo", filetypes=[("Image files", "*.jpg *.jpeg *.png *.bmp"), ("All files", "*.*")])
-        if not path: return
-        try:
-            self.photo_bytes = process_photo(path)
-        except Exception as e:
-            messagebox.showerror(self._t("error"), str(e))
+        if not db.has_password():
+            st.subheader(t("setup_title"))
+            with st.form("setup"):
+                pw1 = st.text_input(t("new_pw"), type="password")
+                pw2 = st.text_input(t("confirm_pw"), type="password")
+                if st.form_submit_button(t("save"), type="primary"):
+                    if len(pw1) < MIN_PASSWORD_LEN:
+                        st.error(t("pw_short"))
+                    elif pw1 != pw2:
+                        st.error(t("pw_mismatch"))
+                    else:
+                        db.set_password(pw1)
+                        st.session_state.authenticated = True
+                        st.rerun()
             return
-        self._show_photo()
 
-    def on_remove_photo(self):
-        self.photo_bytes = None
-        self._show_photo()
+        if st.session_state.failed_attempts >= MAX_LOGIN_ATTEMPTS:
+            st.error(t("locked"))
+            return
 
-    def _read_form(self):
-        data = {k: self.vars[k].get().strip() for k in FIELD_KEYS}
-        if not data["name"]:
-            messagebox.showwarning("Warning", "Please input Name")
+        st.subheader(t("login_title"))
+        with st.form("login"):
+            pw = st.text_input(t("password"), type="password")
+            if st.form_submit_button(t("login"), type="primary"):
+                if db.verify_password(pw):
+                    st.session_state.authenticated = True
+                    st.session_state.failed_attempts = 0
+                    st.rerun()
+                else:
+                    st.session_state.failed_attempts += 1
+                    left = MAX_LOGIN_ATTEMPTS - st.session_state.failed_attempts
+                    st.error(f"{t('wrong_pw')} — {t('attempts')}: {left}")
+
+
+# ---------------------------------------------------------------- Main app
+def sidebar(db: Database):
+    with st.sidebar:
+        st.selectbox(
+            "🌐 " + t("language"), list(LANG_NAMES), index=list(LANG_NAMES).index(st.session_state.lang),
+            format_func=LANG_NAMES.get, key="lang_main",
+            on_change=lambda: st.session_state.update(lang=st.session_state.lang_main),
+        )
+        st.divider()
+
+        # Excel
+        if st.button(t("export"), use_container_width=True):
+            rows = db.all_full()
+            if rows:
+                st.session_state.excel_bytes = export_to_excel(rows, st.session_state.lang)
+            else:
+                st.session_state.excel_bytes = None
+                st.info(t("no_data"))
+        if st.session_state.excel_bytes:
+            st.download_button(
+                t("download"), st.session_state.excel_bytes,
+                file_name=f"personnel_{datetime.now():%Y%m%d_%H%M%S}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+        # Change password
+        with st.expander(t("change_pw")):
+            with st.form("chpw", clear_on_submit=True):
+                old = st.text_input(t("old_pw"), type="password")
+                n1 = st.text_input(t("new_pw"), type="password")
+                n2 = st.text_input(t("confirm_pw"), type="password")
+                if st.form_submit_button(t("save")):
+                    if not db.verify_password(old):
+                        st.error(t("wrong_pw"))
+                    elif len(n1) < MIN_PASSWORD_LEN:
+                        st.error(t("pw_short"))
+                    elif n1 != n2:
+                        st.error(t("pw_mismatch"))
+                    else:
+                        db.set_password(n1)
+                        st.success(t("pw_updated"))
+
+        st.divider()
+        if st.button(t("logout"), use_container_width=True):
+            for k in list(st.session_state.keys()):
+                if k != "lang":
+                    del st.session_state[k]
+            st.rerun()
+
+
+def read_form():
+    data = {k: str(st.session_state.get(f"f_{k}", "") or "").strip() for k in FIELD_KEYS}
+    if not data["name"]:
+        st.warning(t("name_required"))
+        return None
+    for k in DATE_KEYS:
+        if not valid_date(data[k]):
+            label = next(f[1][st.session_state.lang] for f in FIELDS if f[0] == k)
+            st.warning(f"{t('bad_date')} {label}")
             return None
-        return data
+    return data
 
-    def clear_form(self):
-        self.selected_id = None
-        for v in self.vars.values(): v.set("")
-        self.photo_bytes = None
-        self._show_photo()
-        if self.tree.selection():
-            self.tree.selection_remove(self.tree.selection())
 
-    def fill_table(self, rows):
-        self.tree.delete(*self.tree.get_children())
-        for r in rows:
-            vals = [r["id"]] + [r[c] or "" for c in TABLE_COLS]
-            self.tree.insert("", "end", values=vals)
-        self.status.set(f"Total: {len(rows)}")
+def form_section(db: Database):
+    lang = st.session_state.lang
 
-    def refresh(self):
-        self.fill_table(self.db.all())
-        self.clear_form()
+    # ---- Photo (ເກັບຮູບທີ່ອັບໂຫຼດ)
+    form_col, photo_col = st.columns([4, 1])
 
-    def on_select(self, _event=None):
-        sel = self.tree.selection()
-        if not sel: return
-        rec_id = int(self.tree.item(sel[0], "values")[0])
-        rec = self.db.get(rec_id)
-        if rec is None: return
-        self.selected_id = rec_id
-        for k in FIELD_KEYS:
-            self.vars[k].set(rec[k] or "")
-        self.photo_bytes = rec["photo"]
-        self._show_photo()
+    with photo_col:
+        st.markdown(f"**{t('photo')}**")
+        up = st.file_uploader(
+            t("upload_hint"), type=["jpg", "jpeg", "png", "bmp"],
+            key=f"uploader_{st.session_state.uploader_n}", label_visibility="collapsed",
+        )
+        if up is not None:
+            try:
+                st.session_state.photo_bytes = process_photo(up)
+            except Exception as e:
+                st.error(f"{t('error')}: {e}")
+        if st.session_state.photo_bytes:
+            st.image(st.session_state.photo_bytes, use_container_width=True)
+            if st.button(t("remove_photo"), use_container_width=True):
+                st.session_state.photo_bytes = None
+                st.session_state.uploader_n += 1
+                st.rerun()
+        else:
+            st.caption(f"🖼 {t('no_photo')}")
 
-    def on_add(self):
-        data = self._read_form()
-        if not data: return
-        self.db.add(data, self.photo_bytes)
-        self.refresh()
-        self.status.set("Added successfully")
+    with form_col:
+        title = t("form")
+        if st.session_state.selected_id is not None:
+            title += f"  —  {t('editing')}: {st.session_state.selected_id}"
+        st.markdown(f"**{title}**")
 
-    def on_update(self):
-        if self.selected_id is None:
-            messagebox.showinfo("Info", self._t("select_row_err"))
-            return
-        data = self._read_form()
-        if not data: return
-        self.db.update(self.selected_id, data, self.photo_bytes)
-        self.refresh()
-        self.status.set("Updated successfully")
+        per_row = 3
+        for start in range(0, len(FIELDS), per_row):
+            cols = st.columns(per_row)
+            for col, (key, labels, kind) in zip(cols, FIELDS[start:start + per_row]):
+                label = labels[lang] + (" *" if key == "name" else "")
+                with col:
+                    if kind == "combo":
+                        opts = [""] + COMBO_OPTIONS[key][lang]
+                        cur = st.session_state.get(f"f_{key}", "")
+                        if cur and cur not in opts:      # ຄ່າເກົ່າຈາກພາສາອື່ນ
+                            opts.append(cur)
+                        st.selectbox(label, opts, key=f"f_{key}")
+                    elif kind == "date":
+                        st.text_input(label, key=f"f_{key}", placeholder="DD/MM/YYYY")
+                    else:
+                        st.text_input(label, key=f"f_{key}")
+        st.caption(t("required_hint"))
 
-    def on_delete(self):
-        if self.selected_id is None:
-            messagebox.showinfo("Info", self._t("select_row_err"))
-            return
-        if messagebox.askyesno("Confirm", "Delete this record?"):
-            self.db.delete(self.selected_id)
-            self.refresh()
-            self.status.set("Deleted successfully")
+    # ---- Action buttons
+    b1, b2, b3, b4, _ = st.columns([1, 1.4, 1, 1, 3])
+    if b1.button(t("add"), type="primary", use_container_width=True):
+        data = read_form()
+        if data:
+            db.add(data, st.session_state.photo_bytes)
+            queue_clear()
+            flash("success", t("added"))
+            st.rerun()
 
-    def on_search(self):
-        kw = self.var_search.get().strip()
-        if not kw:
-            self.refresh()
-            return
-        self.fill_table(self.db.search(kw))
+    if b2.button(t("update"), use_container_width=True):
+        if st.session_state.selected_id is None:
+            st.info(t("select_row_err"))
+        else:
+            data = read_form()
+            if data:
+                db.update(st.session_state.selected_id, data, st.session_state.photo_bytes)
+                queue_clear()
+                flash("success", t("updated"))
+                st.rerun()
 
-    def on_export(self):
-        rows = self.db.all_full()
-        if not rows: return
-        path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])
-        if not path: return
-        export_to_excel(rows, path, self.current_lang)
-        messagebox.showinfo(self._t("success"), f"Exported successfully to:\n{path}")
+    if b3.button(t("delete"), use_container_width=True):
+        if st.session_state.selected_id is None:
+            st.info(t("select_row_err"))
+        else:
+            st.session_state.confirm_delete = True
 
-    def on_change_password(self):
-        old = simpledialog.askstring("Change Password", "Current password:", show="*")
-        if not old or not self.db.verify_password(old):
-            messagebox.showerror("Error", "Incorrect current password")
-            return
-        new1 = simpledialog.askstring("Change Password", f"New password (min {MIN_PASSWORD_LEN}):", show="*")
-        if not new1 or len(new1) < MIN_PASSWORD_LEN: return
-        new2 = simpledialog.askstring("Change Password", "Confirm new password:", show="*")
-        if new1 != new2:
-            messagebox.showerror("Error", "Passwords do not match")
-            return
-        self.db.set_password(new1)
-        messagebox.showinfo(self._t("success"), "Password updated")
+    if b4.button(t("clear"), use_container_width=True):
+        queue_clear()
+        st.rerun()
 
-    def on_logout(self):
-        if messagebox.askyesno("Logout", "Are you sure you want to logout?"):
-            self.is_logged_out = True
-            self.destroy()
+    if st.session_state.confirm_delete and st.session_state.selected_id is not None:
+        st.warning(f"{t('confirm_delete')} (ID {st.session_state.selected_id})")
+        c1, c2, _ = st.columns([1, 1, 6])
+        if c1.button(t("yes"), type="primary"):
+            db.delete(st.session_state.selected_id)
+            queue_clear()
+            flash("success", t("deleted"))
+            st.rerun()
+        if c2.button(t("cancel")):
+            st.session_state.confirm_delete = False
+            st.rerun()
+
+
+def table_section(db: Database):
+    lang = st.session_state.lang
+
+    s1, s2, s3, _ = st.columns([3, 1, 1.3, 3])
+    kw = s1.text_input(t("search"), value=st.session_state.search_kw,
+                       placeholder=t("search_ph"), label_visibility="collapsed")
+    if kw != st.session_state.search_kw:
+        st.session_state.search_kw = kw
+        st.session_state.table_n += 1
+        st.rerun()
+    s2.button(t("search"), use_container_width=True)  # ກົດເພື່ອ rerun
+    if s3.button(t("show_all"), use_container_width=True):
+        st.session_state.search_kw = ""
+        st.session_state.table_n += 1
+        st.rerun()
+
+    kw = st.session_state.search_kw.strip()
+    rows = db.search(kw) if kw else db.all()
+
+    labels = {f[0]: f[1][lang] for f in FIELDS}
+    df = pd.DataFrame(
+        [[r["id"]] + [r[c] or "" for c in TABLE_COLS] for r in rows],
+        columns=["ID"] + [labels[c] for c in TABLE_COLS],
+    )
+    ids = [r["id"] for r in rows]
+
+    st.caption(f"{t('total')}: {len(rows)}")
+    event = st.dataframe(
+        df, hide_index=True, use_container_width=True, height=380,
+        on_select="rerun", selection_mode="single-row",
+        key=f"table_{st.session_state.table_n}",
+    )
+
+    sel = event.selection.rows if event and event.selection else []
+    if sel:
+        rec_id = ids[sel[0]]
+        if rec_id != st.session_state.selected_id:
+            rec = db.get(rec_id)
+            if rec is not None:
+                st.session_state.selected_id = rec_id
+                st.session_state.photo_bytes = rec["photo"]
+                st.session_state.pending_load = {k: rec[k] or "" for k in FIELD_KEYS}
+                st.session_state.uploader_n += 1
+                st.session_state.confirm_delete = False
+                st.rerun()
+
+
+def main_screen(db: Database):
+    apply_pending_load()
+    sidebar(db)
+    st.title(t("title"))
+
+    if st.session_state.flash:
+        kind, msg = st.session_state.flash
+        st.toast(msg, icon="✅" if kind == "success" else "⚠️")
+        st.session_state.flash = None
+
+    form_section(db)
+    st.divider()
+    table_section(db)
+
 
 def main():
-    if MISSING_LIB:
-        return
-    db = Database()
-    while True:
-        if not authenticate(db): break
-        app = App(db)
-        app.mainloop()
-        if not getattr(app, "is_logged_out", False): break
+    st.set_page_config(page_title="Personnel DB", page_icon="🗂", layout="wide")
+    init_state()
+    db = get_db()
+    if not st.session_state.authenticated:
+        auth_screen(db)
+    else:
+        main_screen(db)
 
-if __name__ == "__main__":
-    main()
+
+main()
